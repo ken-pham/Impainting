@@ -1,0 +1,154 @@
+import tensorflow as tf
+
+import numpy as np
+import matplotlib.pyplot as plt
+import os
+import datetime
+
+from models.model import Model
+from utils.util import *
+from options.test_options import TestOptions
+
+from tqdm import tqdm
+from PIL import Image, ImageDraw
+
+def load_image (image_file, config) :
+    image = tf.io.read_file (image_file) 
+    image = tf.image.decode_jpeg (image, channels=3)
+    image = tf.cast (image, dtype=tf.float32)
+    image = tf.image.resize (image, [config.image_shape[0], config.image_shape[1]])
+    image = image / 255.0
+
+    return image
+
+def load_mask (mask_file, config) :
+    mask = tf.io.read_file (mask_file)
+    mask = tf.image.decode_png (mask, channels=1)
+    mask = tf.cast (mask, dtype=tf.float32)
+    mask = tf.image.resize (mask, [config.image_shape[0], config.image_shape[1]])
+    mask = mask / 255.0
+    
+    return mask
+
+def test (config) :
+    if config.test_file_path != '' :
+        print (config.test_file_path)
+        count = 0
+
+        file = open (config.test_file_path)
+        if config.generate_mask == 1 :
+            for line in file.readlines () :
+                line = line[:-1]
+                if not line.split('.')[-1] in ['jpg', 'png', 'jpeg'] :
+                    continue
+
+                print ('Processing Image -', line)
+                if config.random_mask == 1 :
+                    mask = irregular_mask (config.image_shape[0], config.image_shape[1], config.min_strokes, config.max_strokes)
+                else :
+                    mask = center_mask (config.image_shape[0], config.image_shape[1])
+
+                gt_image = load_image (line, config)
+                gt_image = np.expand_dims (gt_image, axis=0)
+
+                input_image = np.where (mask==1, 1, gt_image)
+
+                prediction_coarse, prediction_refine = generator ([input_image, mask], training=False)
+                #prediction_refine = prediction_refine * mask + gt_image * (1  - mask)
+                save_images (input_image[0, ...], gt_image[0, ...], prediction_coarse[0, ...], prediction_refine[0, ...], os.path.join (config.testing_dir, line.split ('/')[-1]))
+
+                count += 1
+                if count == config.test_num :
+                    return
+                print ('-'*20)
+        elif config.generate_mask == 2 :
+            for line in file.readlines () :
+                line = line[:-1]
+                if not line.split('.')[-1] in ['jpg', 'png', 'jpeg'] :
+                    continue
+                print(line)
+                print ('Processing Image -', line)
+
+                gt_image = load_image (os.path.join(line,"data"), config)
+                gt_image = np.expand_dims (gt_image, axis=0)
+                
+                mask = load_mask (os.path.join(line,'mask'), config)
+                # mask = np.where (np.array (mask) > 0.5, 1.0, 0.0).astype (np.float32)
+                mask = np.expand_dims (mask, axis=0)
+                
+               
+
+                prediction_coarse, prediction_refine = generator ([gt_image, mask], training=False)
+                prediction_refine = prediction_refine * mask + gt_image * (1  - mask)
+                save_images (input_image[0, ...], gt_image[0, ...], prediction_coarse[0, ...], prediction_refine[0, ...], os.path.join (config.testing_dir, line.split (' ')[0].split ('/')[-1]))
+
+                count += 1
+                if count == config.test_num :
+                    return
+                print ('-'*20)
+        else :
+            for line in file.readlines () :
+                line = line[:-1]
+                if not line.split(' ')[0].split('.')[-1] in ['jpg', 'png', 'jpeg'] :
+                    continue
+
+                print ('Processing Image -', line)
+
+                gt_image = load_image (line.split (' ')[0], config)
+                gt_image = np.expand_dims (gt_image, axis=0)
+                
+                mask = load_mask (line.split (' ')[1], config)
+                mask = np.where (np.array (mask) > 0.5, 1.0, 0.0).astype (np.float32)
+                mask = np.expand_dims (mask, axis=0)
+                
+                input_image = np.where (mask==1, 1, gt_image)
+
+                prediction_coarse, prediction_refine = generator ([input_image, mask], training=False)
+                #prediction_refine = prediction_refine * mask + gt_image * (1  - mask)
+                save_images (input_image[0, ...], gt_image[0, ...], prediction_coarse[0, ...], prediction_refine[0, ...], os.path.join (config.testing_dir, line.split (' ')[0].split ('/')[-1]))
+
+                count += 1
+                if count == config.test_num :
+                    return
+                print ('-'*20)
+    else :
+        count = 0
+        root_mask= config.test_dir + "/mask"
+        for root, dirs, files in os.walk (config.test_dir+"/data") :
+            for file in files :
+                if not file.split('.')[-1] in ['jpg', 'png', 'jpeg'] :
+                    continue
+                
+               
+                print ('Processing Image -', file)
+                
+                mask = load_mask (os.path.join(root_mask,file), config)
+                mask = np.expand_dims (mask, axis=0)
+
+                gt_image = load_image (os.path.join (root, file), config)
+                gt_image = np.expand_dims (gt_image, axis=0)
+
+                input_image =  gt_image 
+
+                prediction_coarse, prediction_refine = generator ([input_image, mask], training=False)
+                #prediction_refine = prediction_refine * mask + gt_image * (1  - mask)
+                save_images (input_image[0, ...], gt_image[0, ...], prediction_coarse[0, ...], prediction_refine[0, ...], os.path.join (config.testing_dir, file))
+                
+                count += 1
+                if count == config.test_num :
+                    return
+                print ('-'*20)
+
+if __name__ == '__main__' :
+    # Loading the arguments
+    config = TestOptions().parse ()
+
+    model = Model ()
+    generator = model.build_generator (config.image_shape[0], config.image_shape[1])
+
+    checkpoint = tf.train.Checkpoint (generator=generator)
+   
+
+    checkpoint.restore (tf.train.latest_checkpoint ("Training/HypergraphII_green_shape512x512_random_mask_incremental/training_checkpoints"))
+
+    test (config)
